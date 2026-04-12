@@ -1,0 +1,216 @@
+# ==========================================
+# WinPE Build Script
+# - Backs up existing C:\WinPE_amd64 with timestamp
+# - Creates fresh WinPE working files with copype
+# - Adds WinPE PowerShell support
+# - Copies C:\Scripts\*.ps1 into WinPE as X:\Scripts
+# - Launches X:\Scripts\Menu.ps1 at boot
+# - Builds ISO
+# ==========================================
+
+# ------------------------------
+# Config
+# ------------------------------
+$WinPEPath     = "C:\WinPE_amd64"
+$MountDir      = Join-Path $WinPEPath "mount"
+$BootWim       = Join-Path $WinPEPath "media\sources\boot.wim"
+$ISOFile       = Join-Path $WinPEPath "WinPE_Custom.iso"
+$SourceScripts = "C:\Scripts"
+$Lang          = "en-us"
+$Arch          = "amd64"
+
+# Detect WinPE Optional Components path
+if ($env:WinPERoot -and (Test-Path (Join-Path $env:WinPERoot "$Arch\WinPE_OCs"))) {
+    $OCFolder = Join-Path $env:WinPERoot "$Arch\WinPE_OCs"
+}
+else {
+    $OCFolder = "C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Windows Preinstallation Environment\$Arch\WinPE_OCs"
+}
+
+# ------------------------------
+# Show paths
+# ------------------------------
+Write-Host ""
+Write-Host "WinPE path     : $WinPEPath"
+Write-Host "Mount path     : $MountDir"
+Write-Host "boot.wim path  : $BootWim"
+Write-Host "WinPE OCs path : $OCFolder"
+Write-Host "Scripts source : $SourceScripts"
+Write-Host "ISO output     : $ISOFile"
+Write-Host ""
+
+# ------------------------------
+# Validate WinPE OCs
+# ------------------------------
+if (-not (Test-Path $OCFolder)) {
+    throw "WinPE_OCs folder not found: $OCFolder"
+}
+
+# ------------------------------
+# Backup existing WinPE folder
+# ------------------------------
+if (Test-Path $WinPEPath) {
+    $timestamp = Get-Date -Format "yyyy-MM-dd_HHmmss"
+    $OldPath = "C:\WinPE_amd64-$timestamp"
+
+    Write-Host "Existing WinPE folder detected."
+    Write-Host "Renaming to backup: $OldPath"
+
+    Rename-Item -Path $WinPEPath -NewName $OldPath -ErrorAction Stop
+}
+
+# ------------------------------
+# Create fresh WinPE working files
+# ------------------------------
+Write-Host "Running copype..."
+cmd.exe /c "copype $Arch `"$WinPEPath`""
+if ($LASTEXITCODE -ne 0) {
+    throw "copype failed. Run this inside Deployment and Imaging Tools Environment as Administrator."
+}
+
+Start-Sleep -Seconds 2
+
+# ------------------------------
+# Validate boot.wim
+# ------------------------------
+if (-not (Test-Path $BootWim)) {
+    throw "boot.wim missing after copype: $BootWim"
+}
+
+# ------------------------------
+# Ensure mount directory exists
+# ------------------------------
+if (-not (Test-Path $MountDir)) {
+    New-Item -ItemType Directory -Path $MountDir | Out-Null
+}
+
+# ------------------------------
+# Clean stale DISM mount metadata
+# ------------------------------
+Write-Host "Cleaning stale WIM mount data..."
+& Dism /Cleanup-Wim | Out-Null
+
+# ------------------------------
+# Mount boot.wim
+# ------------------------------
+Write-Host "Mounting boot.wim..."
+& Dism /Mount-Image /ImageFile:"$BootWim" /Index:1 /MountDir:"$MountDir"
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to mount boot.wim. Exit code: $LASTEXITCODE"
+}
+
+try {
+    # ------------------------------
+    # Add WinPE optional components
+    # Required dependency order
+    # ------------------------------
+    $Packages = @(
+        @{ Name = "WinPE-WMI";               Path = (Join-Path $OCFolder "WinPE-WMI.cab") },
+        @{ Name = "WinPE-WMI_$Lang";         Path = (Join-Path $OCFolder "$Lang\WinPE-WMI_$Lang.cab") },
+
+        @{ Name = "WinPE-NetFx";             Path = (Join-Path $OCFolder "WinPE-NetFx.cab") },
+        @{ Name = "WinPE-NetFx_$Lang";       Path = (Join-Path $OCFolder "$Lang\WinPE-NetFx_$Lang.cab") },
+
+        @{ Name = "WinPE-Scripting";         Path = (Join-Path $OCFolder "WinPE-Scripting.cab") },
+        @{ Name = "WinPE-Scripting_$Lang";   Path = (Join-Path $OCFolder "$Lang\WinPE-Scripting_$Lang.cab") },
+
+        @{ Name = "WinPE-PowerShell";        Path = (Join-Path $OCFolder "WinPE-PowerShell.cab") },
+        @{ Name = "WinPE-PowerShell_$Lang";  Path = (Join-Path $OCFolder "$Lang\WinPE-PowerShell_$Lang.cab") }
+    )
+
+    Write-Host ""
+    Write-Host "Adding WinPE optional components..."
+    foreach ($pkg in $Packages) {
+        if (-not (Test-Path $pkg.Path)) {
+            throw "Package not found: $($pkg.Path)"
+        }
+
+        Write-Host "Adding package: $($pkg.Name)"
+        & Dism /Image:"$MountDir" /Add-Package /PackagePath:"$($pkg.Path)"
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to add package $($pkg.Name). Exit code: $LASTEXITCODE"
+        }
+    }
+
+    # ------------------------------
+    # Copy scripts into WinPE
+    # ------------------------------
+    Write-Host ""
+    if (Test-Path $SourceScripts) {
+        $DestScripts = Join-Path $MountDir "Scripts"
+
+        if (-not (Test-Path $DestScripts)) {
+            New-Item -ItemType Directory -Path $DestScripts | Out-Null
+        }
+
+        $ScriptFiles = Get-ChildItem -Path $SourceScripts -Filter *.ps1 -File -ErrorAction SilentlyContinue
+
+        if ($ScriptFiles.Count -gt 0) {
+            Write-Host "Copying .ps1 files from C:\Scripts into WinPE..."
+            Copy-Item -Path "$SourceScripts\*.ps1" -Destination $DestScripts -Force -ErrorAction Stop
+            Write-Host "Copied $($ScriptFiles.Count) script(s) to X:\Scripts"
+        }
+        else {
+            Write-Warning "No .ps1 files found in $SourceScripts"
+        }
+    }
+    else {
+        Write-Warning "Source folder not found: $SourceScripts"
+    }
+
+    # ------------------------------
+    # Validate Menu.ps1 exists
+    # ------------------------------
+    $MenuScript = Join-Path $MountDir "Scripts\Menu.ps1"
+    if (-not (Test-Path $MenuScript)) {
+        throw "Menu.ps1 not found in C:\Scripts. Required for startup menu."
+    }
+
+    # ------------------------------
+    # Configure WinPE startup
+    # ------------------------------
+    Write-Host ""
+    Write-Host "Configuring startnet.cmd to launch Menu.ps1..."
+    $StartNet = Join-Path $MountDir "Windows\System32\startnet.cmd"
+
+    Set-Content -Path $StartNet -Encoding ASCII -Value @"
+wpeinit
+echo Loading WinPE Menu...
+powershell.exe -ExecutionPolicy Bypass -File X:\Scripts\Menu.ps1
+"@
+
+    Write-Host "Verifying startnet.cmd contents..."
+    Get-Content $StartNet | ForEach-Object { Write-Host $_ }
+
+    # ------------------------------
+    # Commit changes
+    # ------------------------------
+    Write-Host ""
+    Write-Host "Committing changes and unmounting..."
+    & Dism /Unmount-Image /MountDir:"$MountDir" /Commit
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to unmount/commit image. Exit code: $LASTEXITCODE"
+    }
+}
+catch {
+    Write-Warning $_.Exception.Message
+    Write-Host "Attempting to discard mounted image..."
+    & Dism /Unmount-Image /MountDir:"$MountDir" /Discard | Out-Null
+    throw
+}
+
+# ------------------------------
+# Build ISO
+# ------------------------------
+Write-Host ""
+Write-Host "Creating ISO at $ISOFile..."
+& MakeWinPEMedia /ISO "$WinPEPath" "$ISOFile"
+if ($LASTEXITCODE -ne 0) {
+    throw "ISO creation failed. Exit code: $LASTEXITCODE"
+}
+
+Write-Host ""
+Write-Host "Done."
+Write-Host "ISO created successfully: $ISOFile"
+Write-Host "Scripts will be available in WinPE at: X:\Scripts"
+Write-Host "Startup menu will launch from: X:\Scripts\Menu.ps1"
