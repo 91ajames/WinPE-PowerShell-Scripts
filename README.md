@@ -11,4 +11,6 @@ Type: powershell
 
 Type: set-executionpolicy -scope process -executionpolicy bypass
 
+Have Menu.ps1 under C:\Script
+
 Run Script to create you're ISO.
