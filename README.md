@@ -1,5 +1,7 @@
 # WinPE-PowerShell-Scripts
-Creating a WinPE ISO with added PowerShell Support and add Scripts under X:\Scripts Run As Admin under Imaging and Deployment Tool
+Creating a WinPE ISO with added PowerShell Support and added Scripts from C:\Scipts under X:\Scripts
+
+Run As Admin
 
 Open Imaging and Deployment Tool after you install with included Addon from
 
