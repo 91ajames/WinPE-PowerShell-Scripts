@@ -1,5 +1,5 @@
 # WinPE-PowerShell-Scripts
-Creating a WinPE ISO with added PowerShell Support and added Scripts from C:\Scipts under X:\Scripts
+Creating a WinPE ISO with added PowerShell Support with Menu Selections from X:\Scripts
 
 Run As Admin
 
